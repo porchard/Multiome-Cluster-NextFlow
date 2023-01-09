@@ -1,6 +1,6 @@
 # Notes
 
-RNA, ATAC, and QC pipelines must be run first. Each library must be from a single species (i.e., no barnyard experiments).
+snRNA and QC pipelines must be run first. Each library must be from a single species (i.e., no barnyard experiments).
 
 # Steps
 
