@@ -1,7 +1,7 @@
 #!/usr/bin/env nextflow
 
 nextflow.enable.dsl=2
-markers = ['Myh7', 'Myh1', 'Myh2', 'Vwf', 'Pax7', 'Ptprc', 'Myh11', 'Myh3', 'Myh4', 'Fbn1', 'Pdgfra', 'Acta2', 'Chrna1']
+markers = params.markers
 
 
 process subset_nuclei {
