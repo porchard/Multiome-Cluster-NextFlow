@@ -46,9 +46,48 @@ process get_soup {
 }
 
 
-process initial_cluster {
+process add_prefix_to_barcodes_before_predecontamination_merge {
 
-    publishDir "${params.results}/initial-cluster"
+    memory '1 GB'
+    tag "${library}"
+
+    input:
+    tuple val(library), path('matrix.mtx'), path('features.tsv'), path('barcodes.tsv')
+
+    output:
+    tuple val(library), path("${library}.matrix.mtx"), path("${library}.features.tsv"), path("${library}.barcodes.tsv")
+
+    """
+    ln -s matrix.mtx ${library}.matrix.mtx
+    ln -s features.tsv ${library}.features.tsv
+    cat barcodes.tsv | perl -pe 's/^/${library}___/' > ${library}.barcodes.tsv
+    """
+
+}
+
+
+process merge_predecontamination_matrices {
+
+    publishDir "${params.results}/merged-counts/predecontamination"
+    memory '50 GB'
+    container 'docker://porchard/mm:20230104'
+
+    input:
+    tuple val(x), path(matrices), path(features), path(barcodes)
+
+    output:
+    tuple path("merged.matrix.mtx"), path("merged.features.tsv"), path("merged.barcodes.tsv")
+
+    """
+    mm merge --matrices ${matrices.join(' ')} --features ${features.join(' ')} --barcodes ${barcodes.join(' ')} --prefix merged.
+    """
+
+}
+
+
+process cluster_predecontamination_per_library {
+
+    publishDir "${params.results}/cluster/predecontamination/per-library"
     memory '15 GB'
     tag "${library}"
     container 'library://porchard/default/r-general:20220112'
@@ -68,6 +107,27 @@ process initial_cluster {
 }
 
 
+process cluster_predecontamination_joint {
+
+    publishDir "${params.results}/cluster/predecontamination/joint"
+    memory '50 GB'
+    container 'library://porchard/default/r-general:20220112'
+
+    input:
+    tuple path(matrix), path(features), path(barcodes)
+
+    output:
+    path("*.png")
+    path("*.txt")
+    path("merged.clusters.txt"), emit: clusters
+
+    """
+    seurat.R --markers ${markers.join(',')} --prefix merged. --pcs 25 --resolution 0.1 --matrix $matrix --features $features --barcodes $barcodes
+    """
+
+}
+
+
 process decontX {
 
     publishDir "${params.results}/decontX"
@@ -76,7 +136,7 @@ process decontX {
     container 'docker://porchard/decontx:20230104'
 
     input:
-    tuple val(library), path('nuclei.matrix.mtx'), path('nuclei.features.tsv'), path('nuclei.barcodes.tsv'), path('soup.matrix.mtx'), path('soup.features.tsv'), path('soup.barcodes.tsv'), path(clusters)
+    tuple val(library), path('nuclei.matrix.mtx'), path('nuclei.features.tsv'), path('nuclei.barcodes.tsv'), path('soup.matrix.mtx'), path('soup.features.tsv'), path('soup.barcodes.tsv'), path('clusters.txt')
 
     output:
     tuple val(library), path("${library}.decontaminated-counts-rounded.matrix.mtx"), path("${library}.decontaminated-counts-rounded.features.tsv"), path("${library}.decontaminated-counts-rounded.barcodes.tsv"), emit: decontaminated
@@ -84,7 +144,8 @@ process decontX {
     path("*.png")
 
     """
-    decontX.R --matrix nuclei.matrix.mtx --features nuclei.features.tsv --barcodes nuclei.barcodes.tsv --soup_matrix soup.matrix.mtx --soup_features soup.features.tsv --soup_barcodes soup.barcodes.tsv --prefix ${library}. --clusters $clusters
+    grep "^${library}___" clusters.txt | perl -pe 's/^${library}___//' > library-clusters.txt
+    decontX.R --matrix nuclei.matrix.mtx --features nuclei.features.tsv --barcodes nuclei.barcodes.tsv --soup_matrix soup.matrix.mtx --soup_features soup.features.tsv --soup_barcodes soup.barcodes.tsv --prefix ${library}. --clusters library-clusters.txt
     """
 
 }
@@ -113,7 +174,7 @@ process filter_decontX {
 
 process cluster_no_contamination_filter {
 
-    publishDir "${params.results}/cluster/no-contamination-filter"
+    publishDir "${params.results}/cluster/postdecontamination/no-contamination-filter/per-library"
     memory '15 GB'
     tag "${library}"
     container 'library://porchard/default/r-general:20220112'
@@ -135,7 +196,7 @@ process cluster_no_contamination_filter {
 
 process cluster_contamination_filter {
 
-    publishDir "${params.results}/cluster/contamination-filter"
+    publishDir "${params.results}/cluster/postdecontamination/contamination-filter/per-library"
     memory '15 GB'
     tag "${library}"
     container 'library://porchard/default/r-general:20220112'
@@ -155,9 +216,9 @@ process cluster_contamination_filter {
 }
 
 
-process add_prefix_to_barcodes {
+process add_prefix_to_barcodes_before_postdecontamination_merge {
 
-    memory '50 GB'
+    memory '1 GB'
     tag "${library}"
 
     input:
@@ -174,7 +235,8 @@ process add_prefix_to_barcodes {
 
 }
 
-process merge_matrices {
+
+process merge_postdecontamination_matrices {
 
     publishDir "${params.results}/merged-counts"
     memory '50 GB'
@@ -192,9 +254,10 @@ process merge_matrices {
 
 }
 
-process cluster_joint {
 
-    publishDir "${params.results}/cluster/joint"
+process cluster_postdecontamination_joint {
+
+    publishDir "${params.results}/cluster/postdecontamination/contamination-filter/joint"
     memory '50 GB'
     container 'library://porchard/default/r-general:20220112'
 
@@ -207,7 +270,7 @@ process cluster_joint {
     path("merged.clusters.txt")
 
     """
-    seurat.R --markers ${markers.join(',')} --prefix merged. --pcs 15 --resolution 0.2 --matrix $matrix --features $features --barcodes $barcodes
+    seurat.R --markers ${markers.join(',')} --prefix merged. --pcs 25 --resolution 0.1 --matrix $matrix --features $features --barcodes $barcodes
     """
 
 }
@@ -219,12 +282,15 @@ workflow {
 
     library_mtx_features_barcodes_passqcbarcodes = Channel.from(libraries.collect({it -> [it, file(params.libraries[it].matrix), file(params.libraries[it].features), file(params.libraries[it].barcodes), file(params.libraries[it].pass_qc_barcodes)]}))
     nuclei = subset_nuclei(library_mtx_features_barcodes_passqcbarcodes)
-    first_clusters = initial_cluster(nuclei)
     soup = get_soup(library_mtx_features_barcodes_passqcbarcodes.map({it -> it[0..(it.size() - 2)]}))
-    d = nuclei.combine(soup, by: 0).combine(first_clusters.clusters, by: 0) | decontX
+
+    first_clusters_joint = add_prefix_to_barcodes_before_predecontamination_merge(nuclei).map({it -> ['x'] + it[1..3]}).groupTuple() | merge_predecontamination_matrices | cluster_predecontamination_joint
+    first_clusters = cluster_predecontamination_per_library(nuclei)
+
+    d = nuclei.combine(soup, by: 0).combine(first_clusters_joint.clusters) | decontX
     cluster_no_contamination_filter(d.decontaminated)
     filtered = d.decontaminated.combine(d.contamination, by: 0) | filter_decontX
     cluster_contamination_filter(filtered)
-    add_prefix_to_barcodes(filtered).map({it -> ['x'] + it[1..3]}).groupTuple() | merge_matrices | cluster_joint
+    add_prefix_to_barcodes_before_postdecontamination_merge(filtered).map({it -> ['x'] + it[1..3]}).groupTuple() | merge_postdecontamination_matrices | cluster_postdecontamination_joint
 
 }
